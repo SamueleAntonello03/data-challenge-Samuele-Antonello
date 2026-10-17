@@ -1,0 +1,96 @@
+---
+title: "01_migliore_squadra"
+author: "Samuele Antonello 162640"
+date: "2026-10-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+# Qual'è la migliore squadra di calcio in Italia di sempre?
+Questo è il nostro quesito, per rispondere alla domanda ci serviremo dei dataset presenti sul sito football-data.co.uk.
+La mia idea per estrarre i dati dal sito consisterebbe nel riconoscere (all'interno della pagina HTML relativa alla Serie A) tutti i link che ci portano ai file CSV contenenti i dati che ci interessano, una volta fatto quello possiamo andare avanti unendo tutti i CSV in un unico grande file, la mia idea è stata passata all'IA che ha prodotto il seguente codice di scraping:
+```{r}
+#caricamento librerie 
+library(rvest) # per lo scraping della pagina HTML
+library(dplyr) # manipolazione e pulizia dei dati
+library(readr) # lettura efficiente di un file csv
+library(stringr) # manipolazione e filtraggio di stringhe di testo
+library(purrr) # applicazione di funzioni in modo iterativo
+
+base_url = "https://www.football-data.co.uk/"
+page_url = paste0(base_url, "italym.php")
+
+#scraping dei link dei file csv per i campionati di serie a (I1.csv)
+csv_links = read_html(page_url) |>
+  html_nodes("a") |> # cerco tutti i tag <a> (i link) nell' HTML
+  html_attr("href") |> # estrazione dell'attributo href (l'URL vero e proprio)
+  keep(~ str_ends(.x, "I1.csv")) # filtra e mantiene solo i link che terminano con I1.csv (il codice I1 identifica i campionati di serie A)
+
+#creazione degli url completi
+full_urls = paste0(base_url, csv_links)
+
+#ora dobbiamo unire tutti i csv
+# map_dfr scorre tutti i link in full_urls, applica read_csv su ognuno di essi e unisce i risultati riga per riga in raw_data
+raw_data = map_dfr(full_urls, function(x) read_csv(x, show_col_types = FALSE, col_types = cols(.default = "c")))
+
+#selezione, filtraggio e conversione dei dati che ci interessano
+serie_a = raw_data |>
+  select(Date, HomeTeam, AwayTeam, FTHG, FTAG) |>
+  filter(!is.na(Date)) |> # rimuoviamo eventuali righe sporche o vuote dove la data non è presente
+  mutate(
+    FTHG = as.numeric(FTHG), #convertiamo i gol in valori numerici
+    FTAG = as.numeric(FTAG)
+  )
+# mostriamo le prime righe del dataset per verificare che il tutto funzioni
+head(serie_a)
+```
+A questo punto dobbiamo calcolare le statistiche per ogni singola squadra: Partite, vittorie, sconfitte, pareggi, punti e punti medi a partita
+```{r}
+serie_a = serie_a |>
+  #Creazione degli esiti e dei punti
+  mutate(
+    #outcome definisce l'esito della singola partita
+    Outcome = ifelse(FTHG > FTAG, "H", ifelse(FTHG < FTAG, "A", "D")),
+    #assegnamo i punti alla squadra in casa
+    HomePoints = ifelse(Outcome == "H", 3, ifelse(Outcome == "A", 0, 1)),
+    #assegnamo i punti alla squadra in trasferta
+    AwayPoints = ifelse(Outcome == "A", 3, ifelse(Outcome == "H", 0, 1))
+  )
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+
+standing = serie_a |>
+  #gathering: allungamento della tabella
+  pivot_longer(
+    cols = c(HomeTeam, AwayTeam),
+    names_to = "Ruolo",  # conterrà il valore di "HomeTeam" o "AwayTeam"
+    values_to = "Team" # conterrà il nome effettivo della suadra
+  ) |>
+  #assegnazione dei punti della singola partita
+  mutate(PuntiPartita = ifelse(Ruolo == "HomeTeam", HomePoints, AwayPoints)) |>
+  
+  
+  
+  #Raggruppamento del dataset per squadra e calcolo delle statistiche multiple con summarise
+  group_by(Team)|>
+  summarise(TotalPoints = sum(PuntiPartita), 
+            TotalWins = sum(PuntiPartita == 3), 
+            TotalLosses = sum(PuntiPartita == 0), 
+            TotalDraws = sum(PuntiPartita == 1), 
+            AvgPoints = mean(PuntiPartita))|>
+  #ordiniamo la classifica finale in modo decrescente
+  arrange(desc(TotalPoints))
+
+head(standing)
+```
+# Domande che ci si può porre guardando la tabella standing:
+- Quale squadra trae più vantaggio giocando le partite in casa? ossia la più grande discrepanza positiva tra la media dei punti ottenuti in casa e i punti ottenuti in trasferta.
+- Le squadre che vincono i campionati hanno una ottima difesa (subiscono pochi gol in casa e in trasferta) oppure hanno un eccellente attacco? quale tra questi due aspetti influenza di più una squadra vincente?
+- E' vero che il calcio italiano è meno spettacolare di un tempo? il numero di gol complessivi in un campionato si è alzato o si è abbassato nel corso degli anni?
+
+
